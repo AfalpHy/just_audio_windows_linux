@@ -22,6 +22,7 @@ list(APPEND PLUGIN_SOURCES
   "just_audio_windows_linux_plugin.h"
   "audio_player.cpp"
   "audio_player.h"
+  "miniaudio.h"
 )
 
 # Define the plugin library target. Its name must not be changed (see comment

@@ -14,6 +14,7 @@ set(PLUGIN_NAME "just_audio_windows_linux_plugin")
 # Any new source files that you add to the plugin should be added here.
 list(APPEND PLUGIN_SOURCES
   "just_audio_windows_linux_plugin.cc"
+  "miniaudio.h"
 )
 
 # Define the plugin library target. Its name must not be changed (see comment

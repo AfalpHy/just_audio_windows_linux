@@ -1,18 +1,11 @@
 #include "audio_player.h"
 
-#include <mferror.h>
-#include <propvarutil.h>
-
-#pragma comment(lib, "mfplat.lib")
-#pragma comment(lib, "mf.lib")
-#pragma comment(lib, "mfplay.lib")
-
 namespace just_audio_windows_linux {
 
-const flutter::EncodableValue *getValue(const flutter::EncodableMap &map,
+const flutter::EncodableValue *getValue(const flutter::EncodableMap *map,
                                         const char *key) {
-  auto it = map.find(flutter::EncodableValue(key));
-  if (it == map.end()) {
+  auto it = map->find(flutter::EncodableValue(key));
+  if (it == map->end()) {
     return nullptr;
   }
   return &(it->second);
@@ -41,10 +34,14 @@ AudioPlayer::AudioPlayer(std::string id, flutter::BinaryMessenger *messenger)
           // onListen
           [this](const flutter::EncodableValue *arguments,
                  std::unique_ptr<flutter::EventSink<flutter::EncodableValue>>
-                     &&sink) { event_sink_ = std::move(sink); },
+                     &&sink) {
+            event_sink_ = std::move(sink);
+            return nullptr;
+          },
           // onCancel
           [this](const flutter::EncodableValue *arguments) {
             event_sink_.reset();
+            return nullptr;
           }));
 
   auto data_channel =
@@ -58,158 +55,122 @@ AudioPlayer::AudioPlayer(std::string id, flutter::BinaryMessenger *messenger)
           // onListen
           [this](const flutter::EncodableValue *arguments,
                  std::unique_ptr<flutter::EventSink<flutter::EncodableValue>>
-                     &&sink) { data_sink_ = std::move(sink); },
+                     &&sink) {
+            data_sink_ = std::move(sink);
+            return nullptr;
+          },
           // onCancel
           [this](const flutter::EncodableValue *arguments) {
             data_sink_.reset();
+            return nullptr;
           }));
-
-  HRESULT hr = MFStartup(MF_VERSION);
-  assert(SUCCEEDED(hr));
-
-  hr = MFPCreateMediaPlayer(nullptr, FALSE, MFP_OPTION_NONE, this, nullptr,
-                            &player_);
-
-  assert(SUCCEEDED(hr));
 }
 
-AudioPlayer::~AudioPlayer() {
-  player_channel_->SetMethodCallHandler(nullptr);
+AudioPlayer::~AudioPlayer() { player_channel_->SetMethodCallHandler(nullptr); }
 
-  if (player_) {
-    player_->Shutdown();
-  }
-  MFShutdown();
-}
+bool AudioPlayer::load(const std::string &uri) {
+  ma_decoder_config decoder_config =
+      ma_decoder_config_init(ma_format_f32, 0, 0);
 
-bool AudioPlayer::load(const std::wstring &uri) {
-  if (!player_)
-    return false;
-
-  state_ = State::LOADING;
-  durationMs_ = 0;
-
-  HRESULT hr = player_->CreateMediaItemFromURL(uri.c_str(),
-                                               FALSE, // async
-                                               0, nullptr);
-
-  if (FAILED(hr)) {
+  if (ma_decoder_init_file(uri.c_str(), &decoder_config, &decoder_) !=
+      MA_SUCCESS) {
     return false;
   }
+
+  ma_device_config device_config =
+      ma_device_config_init(ma_device_type_playback);
+
+  device_config.playback.format = decoder_.outputFormat;
+  device_config.playback.channels = decoder_.outputChannels;
+  device_config.sampleRate = decoder_.outputSampleRate;
+  device_config.dataCallback = AudioPlayer::DataCallback;
+  device_config.pUserData = this;
+
+  if (ma_device_init(nullptr, &device_config, &device_) != MA_SUCCESS) {
+    ma_decoder_uninit(&decoder_);
+    return false;
+  }
+
   return true;
 }
 
 void AudioPlayer::play() {
-  if (!player_)
+  if (!initialized_)
     return;
 
-  if (SUCCEEDED(player_->Play())) {
-    state_ = State::PLAYING;
+  if (state_ != PlayerState::PLAYING) {
+    ma_device_start(&device_);
+    state_ = PlayerState::PLAYING;
   }
 }
 
 void AudioPlayer::pause() {
-  if (!player_)
+  if (!initialized_)
     return;
 
-  if (SUCCEEDED(player_->Pause())) {
-    state_ = State::PAUSED;
+  if (state_ == PlayerState::PLAYING) {
+    ma_device_stop(&device_);
+    state_ = PlayerState::PAUSED;
   }
 }
 
 void AudioPlayer::stop() {
-  if (!player_)
+  if (!initialized_)
     return;
 
-  player_->Stop();
-  state_ = State::IDLE;
+  ma_device_stop(&device_);
+  ma_decoder_seek_to_pcm_frame(&decoder_, 0);
+  current_frame_ = 0;
+  state_ = PlayerState::STOPPED;
 }
 
 void AudioPlayer::seek(int64_t positionMs) {
-  if (!player_)
+  if (!initialized_)
     return;
 
-  PROPVARIANT var;
-  PropVariantInit(&var);
+  ma_uint64 frame = (positionMs * decoder_.outputSampleRate) / 1000;
 
-  var.vt = VT_I8;
-  var.hVal.QuadPart = positionMs * 10000; // ms → 100ns
-
-  player_->SetPosition(GUID_NULL, &var);
-  PropVariantClear(&var);
+  ma_decoder_seek_to_pcm_frame(&decoder_, frame);
+  current_frame_ = frame;
 }
 
-int64_t AudioPlayer::position() const {
-  if (!player_)
+int64_t AudioPlayer::position() {
+  if (!initialized_)
+    return 0;
+  return (current_frame_ * 1000) / decoder_.outputSampleRate;
+}
+
+int64_t AudioPlayer::duration() {
+  if (!initialized_)
     return 0;
 
-  return 0;
+  ma_uint64 total_frames = 0;
+  ma_decoder_get_length_in_pcm_frames(&decoder_, &total_frames);
+
+  return (total_frames * 1000) / decoder_.outputSampleRate;
 }
 
-int64_t AudioPlayer::duration() const { return durationMs_; }
+void AudioPlayer::DataCallback(ma_device *device, void *output, const void *,
+                               ma_uint32 frameCount) {
+  auto *self = static_cast<AudioPlayer *>(device->pUserData);
 
-void STDMETHODCALLTYPE
-AudioPlayer::OnMediaPlayerEvent(MFP_EVENT_HEADER *event_header) {
-  if (!event_header)
-    return;
+  ma_uint64 frames_read = 0;
+  ma_decoder_read_pcm_frames(&self->decoder_, output, frameCount, &frames_read);
 
-  switch (event_header->eEventType) {
-  case MFP_EVENT_TYPE_MEDIAITEM_CREATED: {
-    auto *created =
-        reinterpret_cast<MFP_MEDIAITEM_CREATED_EVENT *>(event_header);
-    if (created->pMediaItem) {
-      player_->SetMediaItem(created->pMediaItem);
-    }
-    break;
+  float *samples = static_cast<float *>(output);
+  double gain = self->volume_.load();
+  ma_uint32 channels = device->playback.channels;
+
+  for (ma_uint64 i = 0; i < frames_read * channels; ++i) {
+    samples[i] *= static_cast<float>(gain);
   }
 
-  case MFP_EVENT_TYPE_MEDIAITEM_SET: {
-    auto *set = reinterpret_cast<MFP_MEDIAITEM_SET_EVENT *>(event_header);
-    if (set->pMediaItem) {
-      PROPVARIANT var;
-      PropVariantInit(&var);
+  self->current_frame_ += frames_read;
 
-      PropVariantClear(&var);
-    }
-    break;
-  }
-
-  case MFP_EVENT_TYPE_PLAY:
-    state_ = State::PLAYING;
-    if (event_sink_) {
-      event_sink_->Success("playing");
-    }
-    break;
-
-  case MFP_EVENT_TYPE_PAUSE:
-    state_ = State::PAUSED;
-    if (event_sink_) {
-      event_sink_->Success("paused");
-    }
-    break;
-
-  case MFP_EVENT_TYPE_STOP:
-    state_ = State::IDLE;
-    if (event_sink_) {
-      event_sink_->Success("stopped");
-    }
-    break;
-
-  case MFP_EVENT_TYPE_PLAYBACK_ENDED:
-    state_ = State::COMPLETED;
-    if (event_sink_) {
-      event_sink_->Success("completed");
-    }
-    break;
-
-  case MFP_EVENT_TYPE_ERROR:
-    if (event_sink_) {
-      event_sink_->Success("error");
-    }
-    break;
-
-  default:
-    break;
+  if (frames_read < frameCount) {
+    std::memset(samples + frames_read * channels, 0,
+                (frameCount - frames_read) * channels * sizeof(float));
+    self->state_ = PlayerState::STOPPED;
   }
 }
 
@@ -217,10 +178,22 @@ void AudioPlayer::HandleMethodCall(
     const flutter::MethodCall<flutter::EncodableValue> &method_call,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   const auto &method = method_call.method_name();
+  const auto *args =
+      std::get_if<flutter::EncodableMap>(method_call.arguments());
 
   if (method == "load") {
-    std::cout << method << std::endl;
-    assert(0);
+    const auto *audioSourceData =
+        std::get_if<flutter::EncodableMap>(getValue(args, "audioSource"));
+    const auto *children = std::get_if<flutter::EncodableList>(
+        getValue(audioSourceData, "children"));
+    for (auto &child : *children) {
+      const auto *childMap = std::get_if<flutter::EncodableMap>(&child);
+      const auto *child =
+          std::get_if<flutter::EncodableMap>(getValue(childMap, "child"));
+      const auto *uri = std::get_if<std::string>(getValue(child, "uri"));
+      std::cout << *uri << std::endl;
+      result->Success(load(*uri));
+    }
   } else if (method == "play") {
     play();
     result->Success();
@@ -231,14 +204,8 @@ void AudioPlayer::HandleMethodCall(
     stop();
     result->Success();
   } else if (method == "seek") {
-    const auto *args =
-        std::get_if<flutter::EncodableMap>(method_call.arguments());
-    if (args) {
-      auto it = args->find(flutter::EncodableValue("position"));
-      if (it != args->end()) {
-        seek(std::get<int64_t>(it->second));
-      }
-    }
+    auto pos = std::get<int64_t>(*method_call.arguments());
+    seek(pos);
     result->Success();
   } else if (method == "position") {
     result->Success(position());
