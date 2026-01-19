@@ -11,9 +11,10 @@
 #include <string>
 
 #include "miniaudio.h"
+
 namespace just_audio_windows_linux {
 
-enum class PlayerState { IDLE, LOADING, PLAYING, PAUSED, STOPPED, COMPLETED };
+enum class PlayerState { IDLE, LOADING, READY = 3, COMPLETED = 4 };
 
 class AudioPlayer {
 private:
@@ -24,13 +25,16 @@ private:
   std::unique_ptr<flutter::EventSink<>> event_sink_ = nullptr;
   std::unique_ptr<flutter::EventSink<>> data_sink_ = nullptr;
 
+  ma_context context_;
   ma_decoder decoder_{};
   ma_device device_{};
   std::atomic<ma_uint64> current_frame_{0};
-  std::atomic<PlayerState> state_{PlayerState::IDLE};
+  PlayerState state_{PlayerState::IDLE};
   std::atomic<double> volume_{1.0};
+  double speed_ = 1.0;
   bool initialized_ = false;
-
+  bool playing_ = false;
+  int64_t duration_ = 0;
   static void DataCallback(ma_device *device, void *output, const void *input,
                            ma_uint32 frameCount);
 
@@ -38,14 +42,16 @@ public:
   AudioPlayer(std::string id, flutter::BinaryMessenger *messenger);
   ~AudioPlayer();
 
-  bool load(const std::string &uri);
+  bool load(std::string uri);
   void play();
   void pause();
   void stop();
   void seek(int64_t positionMs);
 
   int64_t position();
-  int64_t duration();
+
+  void sendPlaybackEvent();
+  void sendPlaybackData();
 
   void AudioPlayer::HandleMethodCall(
       const flutter::MethodCall<flutter::EncodableValue> &method_call,

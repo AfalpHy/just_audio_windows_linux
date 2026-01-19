@@ -1,6 +1,47 @@
+#define MA_IMPLEMENTATION
 #include "audio_player.h"
 
+#include <chrono>
+
 namespace just_audio_windows_linux {
+
+inline unsigned char HexCharToValue(char c) {
+  if (c >= '0' && c <= '9')
+    return c - '0';
+  if (c >= 'A' && c <= 'F')
+    return c - 'A' + 10;
+  if (c >= 'a' && c <= 'f')
+    return c - 'a' + 10;
+  return 0;
+}
+
+std::wstring DecodeUrlToWstring(const std::string &encoded) {
+  std::string bytes;
+  bytes.reserve(encoded.size());
+
+  for (size_t i = 0; i < encoded.size(); ++i) {
+    char ch = encoded[i];
+    if (ch == '+') {
+      bytes += ' ';
+    } else if (ch == '%' && i + 2 < encoded.size()) {
+      unsigned char high = HexCharToValue(encoded[i + 1]);
+      unsigned char low = HexCharToValue(encoded[i + 2]);
+      bytes += static_cast<char>((high << 4) | low);
+      i += 2;
+    } else {
+      bytes += ch;
+    }
+  }
+
+  // UTF-8 -> wstring
+  int size_needed = MultiByteToWideChar(CP_UTF8, 0, bytes.c_str(),
+                                        (int)bytes.size(), nullptr, 0);
+  std::wstring wstr(size_needed, 0);
+  MultiByteToWideChar(CP_UTF8, 0, bytes.c_str(), (int)bytes.size(), &wstr[0],
+                      size_needed);
+
+  return wstr;
+}
 
 const flutter::EncodableValue *getValue(const flutter::EncodableMap *map,
                                         const char *key) {
@@ -35,12 +76,12 @@ AudioPlayer::AudioPlayer(std::string id, flutter::BinaryMessenger *messenger)
           [this](const flutter::EncodableValue *arguments,
                  std::unique_ptr<flutter::EventSink<flutter::EncodableValue>>
                      &&sink) {
-            event_sink_ = std::move(sink);
+            this->event_sink_ = std::move(sink);
             return nullptr;
           },
           // onCancel
           [this](const flutter::EncodableValue *arguments) {
-            event_sink_.reset();
+            this->event_sink_.reset();
             return nullptr;
           }));
 
@@ -56,24 +97,41 @@ AudioPlayer::AudioPlayer(std::string id, flutter::BinaryMessenger *messenger)
           [this](const flutter::EncodableValue *arguments,
                  std::unique_ptr<flutter::EventSink<flutter::EncodableValue>>
                      &&sink) {
-            data_sink_ = std::move(sink);
+            this->data_sink_ = std::move(sink);
             return nullptr;
           },
           // onCancel
           [this](const flutter::EncodableValue *arguments) {
-            data_sink_.reset();
+            this->data_sink_.reset();
             return nullptr;
           }));
 }
 
 AudioPlayer::~AudioPlayer() { player_channel_->SetMethodCallHandler(nullptr); }
 
-bool AudioPlayer::load(const std::string &uri) {
-  ma_decoder_config decoder_config =
-      ma_decoder_config_init(ma_format_f32, 0, 0);
+bool AudioPlayer::load(std::string uri) {
+  current_frame_ = 0;
+  state_ = PlayerState::LOADING;
+  sendPlaybackEvent();
+  uri = uri.substr(8);
 
-  if (ma_decoder_init_file(uri.c_str(), &decoder_config, &decoder_) !=
-      MA_SUCCESS) {
+  if (initialized_) {
+    ma_device_stop(&device_);
+    ma_device_uninit(&device_);
+    ma_decoder_uninit(&decoder_);
+    ma_context_uninit(&context_);
+    initialized_ = false;
+  }
+  if (ma_context_init(nullptr, 0, nullptr, &context_) != MA_SUCCESS) {
+    return false;
+  }
+
+  ma_decoder_config decoder_config =
+      ma_decoder_config_init(ma_format_f32, 2, 44100);
+  if (ma_decoder_init_file_w(DecodeUrlToWstring(uri).c_str(), &decoder_config,
+                             &decoder_) != MA_SUCCESS) {
+    ma_context_uninit(&context_);
+
     return false;
   }
 
@@ -86,11 +144,23 @@ bool AudioPlayer::load(const std::string &uri) {
   device_config.dataCallback = AudioPlayer::DataCallback;
   device_config.pUserData = this;
 
-  if (ma_device_init(nullptr, &device_config, &device_) != MA_SUCCESS) {
+  if (ma_device_init(&context_, &device_config, &device_) != MA_SUCCESS) {
     ma_decoder_uninit(&decoder_);
+    ma_context_uninit(&context_);
     return false;
   }
 
+  initialized_ = true;
+
+  ma_uint64 total_frames = 0;
+  ma_decoder_get_length_in_pcm_frames(&decoder_, &total_frames);
+  duration_ = (total_frames * 1000000) / decoder_.outputSampleRate;
+
+  if (playing_) {
+    ma_device_start(&device_);
+  }
+  state_ = PlayerState::READY;
+  sendPlaybackEvent();
   return true;
 }
 
@@ -98,20 +168,22 @@ void AudioPlayer::play() {
   if (!initialized_)
     return;
 
-  if (state_ != PlayerState::PLAYING) {
-    ma_device_start(&device_);
-    state_ = PlayerState::PLAYING;
-  }
+  ma_device_start(&device_);
+  playing_ = true;
+  sendPlaybackData();
+  state_ = PlayerState::READY;
+  sendPlaybackEvent();
 }
 
 void AudioPlayer::pause() {
   if (!initialized_)
     return;
 
-  if (state_ == PlayerState::PLAYING) {
-    ma_device_stop(&device_);
-    state_ = PlayerState::PAUSED;
-  }
+  ma_device_stop(&device_);
+  playing_ = false;
+  sendPlaybackData();
+  state_ = PlayerState::READY;
+  sendPlaybackEvent();
 }
 
 void AudioPlayer::stop() {
@@ -120,39 +192,45 @@ void AudioPlayer::stop() {
 
   ma_device_stop(&device_);
   ma_decoder_seek_to_pcm_frame(&decoder_, 0);
+
+  state_ = PlayerState::IDLE;
+  playing_ = false;
+  sendPlaybackData();
   current_frame_ = 0;
-  state_ = PlayerState::STOPPED;
+  sendPlaybackEvent();
 }
 
 void AudioPlayer::seek(int64_t positionMs) {
   if (!initialized_)
     return;
 
-  ma_uint64 frame = (positionMs * decoder_.outputSampleRate) / 1000;
+  ma_uint64 frames = positionMs * (int64_t)decoder_.outputSampleRate / 1000000;
+  current_frame_ = frames;
+  sendPlaybackEvent();
 
-  ma_decoder_seek_to_pcm_frame(&decoder_, frame);
-  current_frame_ = frame;
+  if (playing_) {
+    ma_device_stop(&device_);
+  }
+
+  ma_decoder_seek_to_pcm_frame(&decoder_, frames);
+
+  if (playing_) {
+    ma_device_start(&device_);
+  }
 }
 
 int64_t AudioPlayer::position() {
   if (!initialized_)
     return 0;
-  return (current_frame_ * 1000) / decoder_.outputSampleRate;
-}
-
-int64_t AudioPlayer::duration() {
-  if (!initialized_)
-    return 0;
-
-  ma_uint64 total_frames = 0;
-  ma_decoder_get_length_in_pcm_frames(&decoder_, &total_frames);
-
-  return (total_frames * 1000) / decoder_.outputSampleRate;
+  return (current_frame_ * 1000000) / decoder_.outputSampleRate;
 }
 
 void AudioPlayer::DataCallback(ma_device *device, void *output, const void *,
                                ma_uint32 frameCount) {
   auto *self = static_cast<AudioPlayer *>(device->pUserData);
+  if (self->state_ == PlayerState::COMPLETED) {
+    return;
+  }
 
   ma_uint64 frames_read = 0;
   ma_decoder_read_pcm_frames(&self->decoder_, output, frameCount, &frames_read);
@@ -170,8 +248,53 @@ void AudioPlayer::DataCallback(ma_device *device, void *output, const void *,
   if (frames_read < frameCount) {
     std::memset(samples + frames_read * channels, 0,
                 (frameCount - frames_read) * channels * sizeof(float));
-    self->state_ = PlayerState::STOPPED;
+    self->state_ = PlayerState::COMPLETED;
+    self->sendPlaybackEvent();
   }
+}
+
+void AudioPlayer::sendPlaybackEvent() {
+  auto eventData = flutter::EncodableMap();
+
+  eventData[flutter::EncodableValue("processingState")] =
+      flutter::EncodableValue((int)state_);
+
+  eventData[flutter::EncodableValue("updatePosition")] =
+      flutter::EncodableValue(position()); // int
+
+  eventData[flutter::EncodableValue("bufferedPosition")] =
+      flutter::EncodableValue(duration_); // int
+  eventData[flutter::EncodableValue("duration")] =
+      flutter::EncodableValue(duration_); // int
+  auto now = std::chrono::system_clock::now();
+
+  eventData[flutter::EncodableValue("updateTime")] = flutter::EncodableValue(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          now.time_since_epoch())
+          .count()); // int
+
+  // I don't care about the following data
+  eventData[flutter::EncodableValue("currentIndex")] =
+      flutter::EncodableValue(0); // int
+
+  event_sink_->Success(eventData);
+}
+
+void AudioPlayer::sendPlaybackData() {
+  auto eventData = flutter::EncodableMap();
+
+  eventData[flutter::EncodableValue("playing")] =
+      flutter::EncodableValue(playing_);
+  eventData[flutter::EncodableValue("volume")] =
+      flutter::EncodableValue(volume_.load());
+  eventData[flutter::EncodableValue("speed")] = flutter::EncodableValue(speed_);
+
+  // I don't care about the following data
+  eventData[flutter::EncodableValue("loopMode")] = flutter::EncodableValue(0);
+  eventData[flutter::EncodableValue("shuffleMode")] =
+      flutter::EncodableValue(0);
+
+  data_sink_->Success(eventData);
 }
 
 void AudioPlayer::HandleMethodCall(
@@ -184,36 +307,36 @@ void AudioPlayer::HandleMethodCall(
   if (method == "load") {
     const auto *audioSourceData =
         std::get_if<flutter::EncodableMap>(getValue(args, "audioSource"));
+
     const auto *children = std::get_if<flutter::EncodableList>(
         getValue(audioSourceData, "children"));
-    for (auto &child : *children) {
-      const auto *childMap = std::get_if<flutter::EncodableMap>(&child);
-      const auto *child =
-          std::get_if<flutter::EncodableMap>(getValue(childMap, "child"));
-      const auto *uri = std::get_if<std::string>(getValue(child, "uri"));
-      std::cout << *uri << std::endl;
-      result->Success(load(*uri));
-    }
+
+    const auto *childMap = std::get_if<flutter::EncodableMap>(&children->at(0));
+
+    const auto *uri = std::get_if<std::string>(getValue(childMap, "uri"));
+
+    load(*uri);
   } else if (method == "play") {
     play();
-    result->Success();
   } else if (method == "pause") {
     pause();
-    result->Success();
   } else if (method == "stop") {
     stop();
-    result->Success();
   } else if (method == "seek") {
-    auto pos = std::get<int64_t>(*method_call.arguments());
-    seek(pos);
-    result->Success();
-  } else if (method == "position") {
-    result->Success(position());
-  } else if (method == "duration") {
-    result->Success(duration());
+    const auto *position = getValue(args, "position");
+    if (position != nullptr) {
+      seek((*position).LongValue());
+    }
+  } else if (method == "setVolume") {
+    const auto *volume = std::get_if<double>(getValue(args, "volume"));
+    volume_.store(*volume);
+  } else if (method == "setSpeed") {
+    // const auto *speed = std::get_if<double>(getValue(args, "speed"));
+    std::cerr << "not implement yet" << std::endl;
   } else {
-    result->NotImplemented();
+    // I don't care other method
   }
+  result->Success(flutter::EncodableMap());
 }
 
 } // namespace just_audio_windows_linux
