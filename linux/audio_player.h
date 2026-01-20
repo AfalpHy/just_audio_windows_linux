@@ -25,7 +25,6 @@ public:
   bool load(const std::string &uri);
   void play();
   void pause();
-  void stop();
   void seek(int64_t positionMs);
 
   /* -------- query -------- */
@@ -43,6 +42,8 @@ public:
   ma_device device_{};
 
   std::atomic<ma_uint64> current_frame_{0};
+  ma_uint64 seek_frame_{0};
+  bool need_seek_ = false;
   PlayerState state_{PlayerState::IDLE};
   std::atomic<double> volume_{1.0};
 

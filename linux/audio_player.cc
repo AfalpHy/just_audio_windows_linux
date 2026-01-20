@@ -196,63 +196,26 @@ bool AudioPlayer::load(const std::string &uri) {
 }
 
 void AudioPlayer::play() {
-  if (!initialized_)
-    return;
-
   ma_device_start(&device_);
   playing_ = true;
-  sendPlaybackData();
   state_ = PlayerState::READY;
-  sendPlaybackEvent();
 }
 
 void AudioPlayer::pause() {
-  if (!initialized_)
-    return;
-
   ma_device_stop(&device_);
   playing_ = false;
-  sendPlaybackData();
   state_ = PlayerState::READY;
-  sendPlaybackEvent();
-}
-
-void AudioPlayer::stop() {
-  if (!initialized_)
-    return;
-  ma_device_stop(&device_);
-  ma_decoder_seek_to_pcm_frame(&decoder_, 0);
-
-  state_ = PlayerState::IDLE;
-  playing_ = false;
-  sendPlaybackData();
-  current_frame_ = 0;
-  sendPlaybackEvent();
 }
 
 void AudioPlayer::seek(int64_t positionMs) {
-  if (!initialized_)
-    return;
-
   ma_uint64 frames = positionMs * (int64_t)decoder_.outputSampleRate / 1000000;
-  current_frame_ = frames;
-
-  if (playing_) {
-    ma_device_stop(&device_);
-  }
-
-  ma_decoder_seek_to_pcm_frame(&decoder_, frames);
-
-  if (playing_) {
-    ma_device_start(&device_);
-  }
+  seek_frame_ = frames;
+  need_seek_ = true;
 }
 
 /* ---------------- queries ---------------- */
 
 int64_t AudioPlayer::position() {
-  if (!initialized_)
-    return 0;
   return (current_frame_ * 1000000) / decoder_.outputSampleRate;
 }
 
@@ -278,6 +241,13 @@ void AudioPlayer::DataCallback(ma_device *device, void *output, const void *,
 
   self->current_frame_ += frames_read;
 
+  if (self->need_seek_) {
+    self->need_seek_ = false;
+    ma_decoder_seek_to_pcm_frame(&self->decoder_, self->seek_frame_);
+    self->current_frame_ = self->seek_frame_;
+    return;
+  }
+
   if (frames_read < frameCount) {
     std::memset(samples + frames_read * channels, 0,
                 (frameCount - frames_read) * channels * sizeof(float));
@@ -285,6 +255,7 @@ void AudioPlayer::DataCallback(ma_device *device, void *output, const void *,
     self->sendPlaybackEvent();
   }
 }
+
 void AudioPlayer::sendPlaybackEvent() {
   g_main_context_invoke(NULL, send_playback_event_cb, this);
 }
@@ -314,8 +285,6 @@ void AudioPlayer::HandleMethodCall(FlMethodCall *method_call) {
     play();
   } else if (strcmp(method, "pause") == 0) {
     pause();
-  } else if (strcmp(method, "stop") == 0) {
-    stop();
   } else if (strcmp(method, "seek") == 0) {
     seek(fl_value_get_int(lookup_map(args, "position")));
   } else if (strcmp(method, "setVolume") == 0) {

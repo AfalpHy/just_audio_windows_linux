@@ -107,7 +107,15 @@ AudioPlayer::AudioPlayer(std::string id, flutter::BinaryMessenger *messenger)
           }));
 }
 
-AudioPlayer::~AudioPlayer() { player_channel_->SetMethodCallHandler(nullptr); }
+AudioPlayer::~AudioPlayer() {
+  if (player_channel_) {
+    player_channel_->SetMethodCallHandler(nullptr);
+  }
+  if (initialized_) {
+    ma_device_uninit(&device_);
+    ma_decoder_uninit(&decoder_);
+  }
+}
 
 bool AudioPlayer::load(std::string uri) {
   current_frame_ = 0;
@@ -165,35 +173,24 @@ bool AudioPlayer::load(std::string uri) {
 }
 
 void AudioPlayer::play() {
-  if (!initialized_)
-    return;
-
   ma_device_start(&device_);
   playing_ = true;
   state_ = PlayerState::READY;
 }
 
 void AudioPlayer::pause() {
-  if (!initialized_)
-    return;
-
   ma_device_stop(&device_);
   playing_ = false;
   state_ = PlayerState::READY;
 }
 
 void AudioPlayer::seek(int64_t positionMs) {
-  if (!initialized_)
-    return;
-
   ma_uint64 frames = positionMs * (int64_t)decoder_.outputSampleRate / 1000000;
   seek_frame_ = frames;
   need_seek_ = true;
 }
 
 int64_t AudioPlayer::position() {
-  if (!initialized_)
-    return 0;
   return (current_frame_ * 1000000) / decoder_.outputSampleRate;
 }
 
