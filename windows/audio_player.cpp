@@ -191,6 +191,9 @@ void AudioPlayer::seek(int64_t positionMs) {
 }
 
 int64_t AudioPlayer::position() {
+  if (!initialized_) {
+    return 0;
+  }
   return (current_frame_ * 1000000) / decoder_.outputSampleRate;
 }
 
