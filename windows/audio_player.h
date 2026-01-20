@@ -29,6 +29,8 @@ private:
   ma_decoder decoder_{};
   ma_device device_{};
   std::atomic<ma_uint64> current_frame_{0};
+  ma_uint64 seek_frame_{0};
+  bool need_seek_ = false;
   PlayerState state_{PlayerState::IDLE};
   std::atomic<double> volume_{1.0};
   double speed_ = 1.0;
@@ -45,7 +47,6 @@ public:
   bool load(std::string uri);
   void play();
   void pause();
-  void stop();
   void seek(int64_t positionMs);
 
   int64_t position();

@@ -170,9 +170,7 @@ void AudioPlayer::play() {
 
   ma_device_start(&device_);
   playing_ = true;
-  sendPlaybackData();
   state_ = PlayerState::READY;
-  sendPlaybackEvent();
 }
 
 void AudioPlayer::pause() {
@@ -181,23 +179,7 @@ void AudioPlayer::pause() {
 
   ma_device_stop(&device_);
   playing_ = false;
-  sendPlaybackData();
   state_ = PlayerState::READY;
-  sendPlaybackEvent();
-}
-
-void AudioPlayer::stop() {
-  if (!initialized_)
-    return;
-
-  ma_device_stop(&device_);
-  ma_decoder_seek_to_pcm_frame(&decoder_, 0);
-
-  state_ = PlayerState::IDLE;
-  playing_ = false;
-  sendPlaybackData();
-  current_frame_ = 0;
-  sendPlaybackEvent();
 }
 
 void AudioPlayer::seek(int64_t positionMs) {
@@ -205,18 +187,8 @@ void AudioPlayer::seek(int64_t positionMs) {
     return;
 
   ma_uint64 frames = positionMs * (int64_t)decoder_.outputSampleRate / 1000000;
-  current_frame_ = frames;
-  sendPlaybackEvent();
-
-  if (playing_) {
-    ma_device_stop(&device_);
-  }
-
-  ma_decoder_seek_to_pcm_frame(&decoder_, frames);
-
-  if (playing_) {
-    ma_device_start(&device_);
-  }
+  seek_frame_ = frames;
+  need_seek_ = true;
 }
 
 int64_t AudioPlayer::position() {
@@ -244,6 +216,13 @@ void AudioPlayer::DataCallback(ma_device *device, void *output, const void *,
   }
 
   self->current_frame_ += frames_read;
+
+  if (self->need_seek_) {
+    self->need_seek_ = false;
+    ma_decoder_seek_to_pcm_frame(&self->decoder_, self->seek_frame_);
+    self->current_frame_ = self->seek_frame_;
+    return;
+  }
 
   if (frames_read < frameCount) {
     std::memset(samples + frames_read * channels, 0,
@@ -320,8 +299,6 @@ void AudioPlayer::HandleMethodCall(
     play();
   } else if (method == "pause") {
     pause();
-  } else if (method == "stop") {
-    stop();
   } else if (method == "seek") {
     const auto *position = getValue(args, "position");
     if (position != nullptr) {
