@@ -3,6 +3,8 @@
 # the plugin to fail to compile for some customers of the plugin.
 cmake_minimum_required(VERSION 3.10)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Project-level configuration.
 set(PROJECT_NAME "just_audio_windows_linux")
 project(${PROJECT_NAME} LANGUAGES CXX)
@@ -14,7 +16,7 @@ set(PLUGIN_NAME "just_audio_windows_linux_plugin")
 # Any new source files that you add to the plugin should be added here.
 list(APPEND PLUGIN_SOURCES
   "just_audio_windows_linux_plugin.cc"
-  "miniaudio.h"
+  "audio_player.cc"
 )
 
 # Define the plugin library target. Its name must not be changed (see comment
