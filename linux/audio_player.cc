@@ -207,6 +207,12 @@ void AudioPlayer::pause() {
   state_ = PlayerState::READY;
 }
 
+void AudioPlayer::stop() {
+  ma_device_stop(&device_);
+  playing_ = false;
+  state_ = PlayerState::IDLE;
+}
+
 void AudioPlayer::seek(int64_t positionMs) {
   ma_uint64 frames = positionMs * (int64_t)decoder_.outputSampleRate / 1000000;
   seek_frame_ = frames;
@@ -288,6 +294,8 @@ void AudioPlayer::HandleMethodCall(FlMethodCall *method_call) {
     play();
   } else if (strcmp(method, "pause") == 0) {
     pause();
+  } else if (strcmp(method, "stop") == 0) {
+    stop();
   } else if (strcmp(method, "seek") == 0) {
     seek(fl_value_get_int(lookup_map(args, "position")));
   } else if (strcmp(method, "setVolume") == 0) {

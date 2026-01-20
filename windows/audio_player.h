@@ -47,6 +47,7 @@ public:
   bool load(std::string uri);
   void play();
   void pause();
+  void stop();
   void seek(int64_t positionMs);
 
   int64_t position();
