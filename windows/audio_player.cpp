@@ -1,6 +1,8 @@
 #define MA_IMPLEMENTATION
 #include "audio_player.h"
 
+#include "miniaudio_libopus.c"
+#include "miniaudio_libvorbis.c"
 #include <chrono>
 
 namespace just_audio_windows_linux {
@@ -133,14 +135,27 @@ bool AudioPlayer::load(std::string uri) {
   if (ma_context_init(nullptr, 0, nullptr, &context_) != MA_SUCCESS) {
     return false;
   }
-
   ma_decoder_config decoder_config =
       ma_decoder_config_init(ma_format_f32, 2, 44100);
-  if (ma_decoder_init_file_w(DecodeUrlToWstring(uri).c_str(), &decoder_config,
-                             &decoder_) != MA_SUCCESS) {
-    ma_context_uninit(&context_);
 
-    return false;
+  auto decode_path = DecodeUrlToWstring(uri);
+  if (ma_decoder_init_file_w(decode_path.c_str(), &decoder_config, &decoder_) !=
+      MA_SUCCESS) {
+    decoder_config = ma_decoder_config_init_default();
+
+    ma_decoding_backend_vtable *pCustomBackendVTables[] = {
+        ma_decoding_backend_libopus, ma_decoding_backend_libvorbis};
+    decoder_config.pCustomBackendUserData = NULL;
+    decoder_config.ppCustomBackendVTables = pCustomBackendVTables;
+    decoder_config.customBackendCount =
+        sizeof(pCustomBackendVTables) / sizeof(pCustomBackendVTables[0]);
+
+    if (ma_decoder_init_file_w(decode_path.c_str(), &decoder_config,
+                               &decoder_) != MA_SUCCESS) {
+      ma_decoder_uninit(&decoder_);
+      ma_context_uninit(&context_);
+      return false;
+    }
   }
 
   ma_device_config device_config =
