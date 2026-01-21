@@ -158,19 +158,27 @@ bool AudioPlayer::load(const std::string &uri) {
     return false;
   }
 
-  ma_decoding_backend_vtable *pCustomBackendVTables[] = {
-      ma_decoding_backend_libopus, ma_decoding_backend_libvorbis};
+  ma_decoder_config decoder_config =
+      ma_decoder_config_init(ma_format_f32, 2, 44100);
 
-  ma_decoder_config decoder_config = ma_decoder_config_init_default();
-  decoder_config.pCustomBackendUserData = NULL;
-  decoder_config.ppCustomBackendVTables = pCustomBackendVTables;
-  decoder_config.customBackendCount =
-      sizeof(pCustomBackendVTables) / sizeof(pCustomBackendVTables[0]);
-
-  if (ma_decoder_init_file(path.c_str(), &decoder_config, &decoder_) !=
+  auto decode_path = DecodeUrlToWstring(uri);
+  if (ma_decoder_init_file_w(decode_path.c_str(), &decoder_config, &decoder_) !=
       MA_SUCCESS) {
-    ma_context_uninit(&context_);
-    return false;
+    decoder_config = ma_decoder_config_init_default();
+
+    ma_decoding_backend_vtable *pCustomBackendVTables[] = {
+        ma_decoding_backend_libopus, ma_decoding_backend_libvorbis};
+    decoder_config.pCustomBackendUserData = NULL;
+    decoder_config.ppCustomBackendVTables = pCustomBackendVTables;
+    decoder_config.customBackendCount =
+        sizeof(pCustomBackendVTables) / sizeof(pCustomBackendVTables[0]);
+
+    if (ma_decoder_init_file_w(decode_path.c_str(), &decoder_config,
+                               &decoder_) != MA_SUCCESS) {
+      ma_decoder_uninit(&decoder_);
+      ma_context_uninit(&context_);
+      return false;
+    }
   }
 
   ma_device_config device_config =
