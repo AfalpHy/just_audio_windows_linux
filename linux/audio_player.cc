@@ -1,6 +1,9 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "audio_player.h"
 
+#include "miniaudio_libopus.c"
+#include "miniaudio_libvorbis.c"
+
 #include <cstring>
 #include <iostream>
 
@@ -155,8 +158,14 @@ bool AudioPlayer::load(const std::string &uri) {
     return false;
   }
 
-  ma_decoder_config decoder_config =
-      ma_decoder_config_init(ma_format_f32, 2, 44100);
+  ma_decoding_backend_vtable *pCustomBackendVTables[] = {
+      ma_decoding_backend_libopus, ma_decoding_backend_libvorbis};
+
+  ma_decoder_config decoder_config = ma_decoder_config_init_default();
+  decoder_config.pCustomBackendUserData = NULL;
+  decoder_config.ppCustomBackendVTables = pCustomBackendVTables;
+  decoder_config.customBackendCount =
+      sizeof(pCustomBackendVTables) / sizeof(pCustomBackendVTables[0]);
 
   if (ma_decoder_init_file(path.c_str(), &decoder_config, &decoder_) !=
       MA_SUCCESS) {
@@ -166,7 +175,6 @@ bool AudioPlayer::load(const std::string &uri) {
 
   ma_device_config device_config =
       ma_device_config_init(ma_device_type_playback);
-
   device_config.playback.format = decoder_.outputFormat;
   device_config.playback.channels = decoder_.outputChannels;
   device_config.sampleRate = decoder_.outputSampleRate;
