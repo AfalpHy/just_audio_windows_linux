@@ -161,8 +161,7 @@ bool AudioPlayer::load(const std::string &uri) {
   ma_decoder_config decoder_config =
       ma_decoder_config_init(ma_format_f32, 2, 44100);
 
-  auto decode_path = decodeURL(uri);
-  if (ma_decoder_init_file(decode_path.c_str(), &decoder_config, &decoder_) !=
+  if (ma_decoder_init_file(path.c_str(), &decoder_config, &decoder_) !=
       MA_SUCCESS) {
     decoder_config = ma_decoder_config_init_default();
 
@@ -173,7 +172,7 @@ bool AudioPlayer::load(const std::string &uri) {
     decoder_config.customBackendCount =
         sizeof(pCustomBackendVTables) / sizeof(pCustomBackendVTables[0]);
 
-    if (ma_decoder_init_file(decode_path.c_str(), &decoder_config, &decoder_) !=
+    if (ma_decoder_init_file(path.c_str(), &decoder_config, &decoder_) !=
         MA_SUCCESS) {
       ma_decoder_uninit(&decoder_);
       ma_context_uninit(&context_);
