@@ -133,6 +133,9 @@ bool AudioPlayer::load(std::string uri) {
     initialized_ = false;
   }
   if (ma_context_init(nullptr, 0, nullptr, &context_) != MA_SUCCESS) {
+    state_ = PlayerState::READY;
+    sendPlaybackEvent();
+
     return false;
   }
   ma_decoder_config decoder_config =
@@ -154,6 +157,10 @@ bool AudioPlayer::load(std::string uri) {
                                &decoder_) != MA_SUCCESS) {
       ma_decoder_uninit(&decoder_);
       ma_context_uninit(&context_);
+
+      state_ = PlayerState::READY;
+      sendPlaybackEvent();
+
       return false;
     }
   }
@@ -170,6 +177,10 @@ bool AudioPlayer::load(std::string uri) {
   if (ma_device_init(&context_, &device_config, &device_) != MA_SUCCESS) {
     ma_decoder_uninit(&decoder_);
     ma_context_uninit(&context_);
+
+    state_ = PlayerState::READY;
+    sendPlaybackEvent();
+
     return false;
   }
 
@@ -184,28 +195,41 @@ bool AudioPlayer::load(std::string uri) {
   }
   state_ = PlayerState::READY;
   sendPlaybackEvent();
+
   return true;
 }
 
 void AudioPlayer::play() {
-  ma_device_start(&device_);
   playing_ = true;
   state_ = PlayerState::READY;
+  if (!initialized_) {
+    return;
+  }
+  ma_device_start(&device_);
 }
 
 void AudioPlayer::pause() {
-  ma_device_stop(&device_);
   playing_ = false;
   state_ = PlayerState::READY;
+  if (!initialized_) {
+    return;
+  }
+  ma_device_stop(&device_);
 }
 
 void AudioPlayer::stop() {
-  ma_device_stop(&device_);
   playing_ = false;
   state_ = PlayerState::IDLE;
+  if (!initialized_) {
+    return;
+  }
+  ma_device_stop(&device_);
 }
 
 void AudioPlayer::seek(int64_t positionMs) {
+  if (!initialized_) {
+    return;
+  }
   ma_uint64 frames = positionMs * (int64_t)decoder_.outputSampleRate / 1000000;
   seek_frame_ = frames;
   need_seek_ = true;
@@ -332,7 +356,7 @@ void AudioPlayer::HandleMethodCall(
     volume_.store(*volume);
   } else if (method == "setSpeed") {
     // const auto *speed = std::get_if<double>(getValue(args, "speed"));
-    std::cerr << "not implement yet" << std::endl;
+    std::cerr << "setSpeed not implement yet" << std::endl;
   } else {
     // I don't care other method
   }
